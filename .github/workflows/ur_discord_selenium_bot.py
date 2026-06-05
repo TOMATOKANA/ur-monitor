@@ -1,4 +1,5 @@
 import time
+import difflib
 import requests
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -7,41 +8,35 @@ from bs4 import BeautifulSoup
 # =========================
 # 設定
 # =========================
+URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city[]=13110"
+
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1512593894292979763/rDqQiE18d0aBdLpZqOc9P3Z_prepaJz_SG1BU-_6S7oL-imeGooK5YvIinxJ5r1GGiYD"
-DISCORD_USER_ID = "329597244204515328"
+MENTION_USER_ID = "329597244204515328"
 
-TARGET_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city[]=13110"
-
-STATE_FILE = "last_state.txt"
-
+INTERVAL_SECONDS = 300  # 5分
 
 # =========================
-# Selenium取得（クラウド対応）
+# Seleniumセットアップ
 # =========================
-def fetch_html():
+def create_driver():
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.binary_location = "/usr/bin/chromium-browser"
 
     driver = webdriver.Chrome(options=options)
-
-    try:
-        driver.get(TARGET_URL)
-        time.sleep(5)
-        html = driver.page_source
-        return html
-
-    finally:
-        driver.quit()
+    return driver
 
 
 # =========================
-# 物件抽出
+# 物件取得
 # =========================
-def parse_properties(html):
+def fetch_properties(driver):
+    print("ページ取得中...")
+    driver.get(URL)
+    time.sleep(5)
+
+    html = driver.page_source
     soup = BeautifulSoup(html, "html.parser")
 
     items = soup.select(".module_cassettes_property")
@@ -50,79 +45,89 @@ def parse_properties(html):
 
     for item in items:
         name_tag = item.select_one(".rep_bukken-name")
-        url_tag = item.select_one("a.rep_bukken-link")
-        count_tag = item.select_one(".rep_bukken-count-room")
+        link_tag = item.select_one(".rep_bukken-link")
+        room_tag = item.select_one(".rep_bukken-count-room")
 
-        if not name_tag:
+        if not name_tag or not link_tag:
             continue
 
         name = name_tag.text.strip()
+        link = "https://chintai.r6.ur-net.go.jp" + link_tag.get("href")
 
-        url = ""
-        if url_tag and "href" in url_tag.attrs:
-            url = "https://chintai.r6.ur-net.go.jp" + url_tag["href"]
+        rooms = room_tag.text.strip() if room_tag else "0"
 
-        count = count_tag.text.strip() if count_tag else "0"
-
-        results.append((name, url, count))
+        results.append({
+            "name": name,
+            "rooms": rooms,
+            "url": link
+        })
 
     return results
 
 
 # =========================
-# 状態管理
-# =========================
-def load_state():
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return set(f.read().splitlines())
-    except:
-        return set()
-
-
-def save_state(state):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(state))
-
-
-# =========================
 # Discord通知（メンション付き）
 # =========================
-def notify(name, url, count):
-    content = (
-        f"🚨 **UR空室変化検知** 🚨\n\n"
-        f"🏠 {name}\n"
-        f"🔑 空室数: {count}\n"
-        f"🔗 {url}\n\n"
-        f"<@{DISCORD_USER_ID}>"
-    )
+def send_discord_notification(item):
+    content = f"<@{MENTION_USER_ID}>\n🚨 空室検出\n\n" \
+              f"🏠 {item['name']}\n" \
+              f"🛏 空室数: {item['rooms']}\n" \
+              f"🔗 {item['url']}"
 
-    requests.post(DISCORD_WEBHOOK_URL, json={"content": content})
+    data = {
+        "content": content
+    }
+
+    try:
+        requests.post(DISCORD_WEBHOOK_URL, json=data)
+        print("Discord送信成功:", item["name"])
+    except Exception as e:
+        print("Discord送信エラー:", e)
 
 
 # =========================
-# メイン処理
+# 差分検知
+# =========================
+def detect_changes(old, new):
+    old_set = set([x["name"] for x in old])
+    new_set = set([x["name"] for x in new])
+
+    added = new_set - old_set
+
+    return [x for x in new if x["name"] in added]
+
+
+# =========================
+# メインループ
 # =========================
 def main():
-    print("ページ取得中...")
+    driver = create_driver()
 
-    html = fetch_html()
-    props = parse_properties(html)
+    print("初回取得完了")
 
-    last_state = load_state()
-    current_state = set()
+    old_data = fetch_properties(driver)
 
-    for name, url, count in props:
-        key = f"{name}|{count}"
-        current_state.add(key)
+    while True:
+        time.sleep(INTERVAL_SECONDS)
 
-        if key not in last_state:
-            print("新規検知:", name)
-            notify(name, url, count)
+        try:
+            new_data = fetch_properties(driver)
 
-    save_state(current_state)
+            changes = detect_changes(old_data, new_data)
 
-    print("完了")
+            if changes:
+                print("変化検出:", len(changes))
+
+                for item in changes:
+                    send_discord_notification(item)
+
+            else:
+                print("変化なし")
+
+            old_data = new_data
+
+        except Exception as e:
+            print("エラー:", e)
 
 
 if __name__ == "__main__":
