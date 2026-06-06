@@ -2,7 +2,7 @@ name: UR Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/5 * * * *"   # 5分ごと
   workflow_dispatch:
 
 jobs:
@@ -10,18 +10,41 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # =========================
+      # ① リポジトリ取得
+      # =========================
       - name: Checkout
         uses: actions/checkout@v4
 
+      # =========================
+      # ② Pythonセットアップ
+      # =========================
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # =========================
+      # ③ 依存関係インストール
+      # =========================
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install playwright requests
           python -m playwright install chromium
 
+      # =========================
+      # ④ 実行
+      # =========================
       - name: Run monitor
         run: python ur_monitor.py
+
+      # =========================
+      # ⑤ HTMLデバッグ回収（重要）
+      # =========================
+      - name: Upload debug HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ur-debug-html
+          path: debug_*.html
