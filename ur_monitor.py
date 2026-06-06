@@ -12,11 +12,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-BASE = "https://chintai.r6.ur-net.go.jp/chintai/"
-
-# =========================
-# 対象地域
-# =========================
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/"
 
 CITIES = {
     "世田谷区": "13112",
@@ -57,95 +53,146 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# フルフロー取得
+# ネットワーク監視コア
 # =========================
 
 async def fetch_city(page, city_name, city_code):
 
     print(f"\n--- {city_name} ---")
 
-    # ① トップページへ（重要）
-    await page.goto(BASE, wait_until="domcontentloaded")
-    await page.wait_for_timeout(2000)
+    captured = []
 
-    # ② 地域選択画面へ遷移
-    try:
-        await page.goto(
-            f"https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/?city%5B%5D={city_code}",
-            wait_until="domcontentloaded"
-        )
-    except:
-        print("検索ページ遷移失敗")
-        return {}
+    # =========================
+    # レスポンス監視フック
+    # =========================
+    def handle_response(response):
+        try:
+            url = response.url
+            ct = response.headers.get("content-type", "")
 
+            # JSONっぽい通信だけ拾う
+            if "json" in ct or "api" in url or "search" in url:
+                captured.append(response)
+        except:
+            pass
+
+    page.on("response", handle_response)
+
+    # =========================
+    # ページ遷移（結果ページ直）
+    # =========================
+    url = BASE_URL + f"?city%5B%5D={city_code}"
+
+    await page.goto(url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(5000)
+
+    # =========================
+    # ネットワーク待機
+    # =========================
     await page.wait_for_timeout(3000)
 
-    # ③ 念のためJS安定待機
-    await page.wait_for_load_state("networkidle")
+    data = None
 
-    # ④ 検索結果待機（ここが重要）
-    selectors = [
-        ".module_cassettes_property",
-        ".cassetteitem",
-        "article"
-    ]
+    # =========================
+    # JSONレスポンス探索
+    # =========================
+    for res in captured:
 
-    cards = []
-
-    for sel in selectors:
         try:
-            await page.wait_for_selector(sel, timeout=20000)
-            cards = await page.query_selector_all(sel)
-            if cards:
-                break
+            body = await res.json()
+
+            # URっぽい構造を柔軟に吸収
+            if isinstance(body, dict):
+
+                if "data" in body:
+                    data = body["data"]
+                    break
+
+                if "properties" in body:
+                    data = body["properties"]
+                    break
+
+                if "result" in body:
+                    data = body["result"]
+                    break
+
         except:
             continue
 
-    if not cards:
-        print("DOM未生成（フロー未発火）")
-        html = await page.content()
-        with open(f"debug_{city_code}.html", "w", encoding="utf-8") as f:
-            f.write(html)
+    # =========================
+    # fallback（どうしても取れない場合）
+    # =========================
+    if not data:
+        print(f"{city_name}: JSON未取得 → DOMフォールバック")
+
+        selectors = [
+            ".module_cassettes_property",
+            ".cassetteitem",
+            "article"
+        ]
+
+        for sel in selectors:
+            try:
+                await page.wait_for_selector(sel, timeout=10000)
+                cards = await page.query_selector_all(sel)
+
+                results = {}
+
+                for card in cards:
+                    try:
+                        name_el = await card.query_selector("h2")
+                        count_el = await card.query_selector(".rep_bukken-count-room")
+
+                        name = await name_el.inner_text() if name_el else "不明"
+                        count_text = await count_el.inner_text() if count_el else "0"
+
+                        count = int("".join([c for c in count_text if c.isdigit()] or "0"))
+
+                        key = f"{city_name}:{name.strip()}"
+
+                        results[key] = {"count": count, "link": ""}
+
+                    except:
+                        continue
+
+                return results
+
+            except:
+                continue
+
+        print(f"{city_name}: 完全失敗")
         return {}
 
-    print("取得件数:", len(cards))
+    # =========================
+    # JSON解析
+    # =========================
 
     results = {}
 
-    # ⑤ データ抽出
-    for card in cards:
+    try:
+        for item in data:
 
-        try:
-            name_el = await card.query_selector(".rep_bukken-name")
-            if not name_el:
-                name_el = await card.query_selector("h2")
+            if not isinstance(item, dict):
+                continue
 
-            count_el = await card.query_selector(".rep_bukken-count-room")
+            name = item.get("name") or item.get("bukkenName") or "不明"
+            count = item.get("vacancyCount") or item.get("count") or 0
+            link = item.get("detailUrl") or ""
 
-            name = await name_el.inner_text() if name_el else "不明"
-            count_text = await count_el.inner_text() if count_el else "0"
+            if link and not link.startswith("http"):
+                link = "https://chintai.r6.ur-net.go.jp" + link
 
-            try:
-                count = int("".join([c for c in count_text if c.isdigit()]))
-            except:
-                count = 0
-
-            link = ""
-            a = await card.query_selector("a")
-            if a:
-                href = await a.get_attribute("href")
-                if href:
-                    link = "https://chintai.r6.ur-net.go.jp" + href
-
-            key = f"{city_name}:{name.strip()}"
+            key = f"{city_name}:{name}"
 
             results[key] = {
-                "count": count,
+                "count": int(count),
                 "link": link
             }
 
-        except:
-            continue
+    except:
+        print(f"{city_name}: JSON解析失敗")
+
+    print(f"{city_name} 件数:", len(results))
 
     return results
 
@@ -183,7 +230,7 @@ async def main():
                         f"{MENTION} 🆕空室増加\n"
                         f"{k}\n"
                         f"{old_count} → {v['count']}\n"
-                        f"{v['link']}"
+                        f"{v.get('link','')}"
                     )
 
         await browser.close()
