@@ -1,12 +1,15 @@
 import requests
 from bs4 import BeautifulSoup
+import os
 
 URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city[]=13110"
+
+WEBHOOK = os.getenv("DISCORD_WEBHOOK")
+USER_ID = os.getenv("DISCORD_USER_ID")
 
 def fetch():
     r = requests.get(URL, timeout=20)
     r.raise_for_status()
-
     soup = BeautifulSoup(r.text, "html.parser")
 
     results = []
@@ -35,12 +38,19 @@ def fetch():
     return results
 
 
+def notify(text):
+    if not WEBHOOK:
+        return
+    requests.post(WEBHOOK, json={"content": text})
+
+
 def main():
     data = fetch()
 
     for name, count, link in data:
         if count > 0:
-            print(f"🆕 {name}（{count}件）{link}")
+            msg = f"<@{USER_ID}> 🆕空室: {name}（{count}件）\n{link}"
+            notify(msg)
 
 
 if __name__ == "__main__":
