@@ -12,7 +12,11 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-TARGET_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/"
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
+
+# =========================
+# 監視対象（固定）
+# =========================
 
 CITIES = {
     "世田谷区": "13112",
@@ -28,7 +32,7 @@ CITIES = {
 }
 
 # =========================
-# Discord通知
+# 通知
 # =========================
 
 def notify(msg):
@@ -53,44 +57,56 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# ブラウザ完全再現取得
+# 1地域取得（最終安定版）
 # =========================
 
 async def fetch_city(page, city_name, city_code):
 
+    url = BASE_URL + city_code
+
     print(f"\n--- {city_name} ---")
+    print(url)
 
-    # ① ページ移動（通常ブラウザ相当）
-    await page.goto(TARGET_URL, wait_until="domcontentloaded")
-
-    # ② JS完全描画待ち（重要）
-    await page.wait_for_load_state("networkidle")
-
-    # ③ 地域チェック（UI依存）
     try:
-        selector = f"input[value='{city_code}']"
-        await page.check(selector)
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
     except:
-        pass
-
-    # ④ 検索ボタン（複数パターン対応）
-    try:
-        await page.click("text=検索")
-    except:
-        try:
-            await page.click("button:has-text('検索')")
-        except:
-            pass
-
-    # ⑤ JS結果待ち（最重要）
-    try:
-        await page.wait_for_selector(".module_cassettes_property", timeout=20000)
-    except:
-        print(f"{city_name}: DOM未生成")
+        print(f"{city_name}: ページ取得失敗")
         return {}
 
-    # ⑥ 物件取得
-    cards = await page.query_selector_all(".module_cassettes_property")
+    # JS完全待機（重要）
+    await page.wait_for_timeout(4000)
+
+    # DOM待機（複数保険）
+    selectors = [
+        ".module_cassettes_property",
+        ".cassetteitem",
+        "article"
+    ]
+
+    found = False
+    for sel in selectors:
+        try:
+            await page.wait_for_selector(sel, timeout=15000)
+            found = True
+            break
+        except:
+            continue
+
+    if not found:
+        print(f"{city_name}: DOM未生成")
+        html = await page.content()
+
+        with open(f"debug_{city_code}.html", "w", encoding="utf-8") as f:
+            f.write(html)
+
+        return {}
+
+    # 物件カード取得（複数パターン対応）
+    cards = []
+    for sel in selectors:
+        cards = await page.query_selector_all(sel)
+        if cards:
+            break
 
     print(f"{city_name} 件数:", len(cards))
 
@@ -99,19 +115,27 @@ async def fetch_city(page, city_name, city_code):
     for card in cards:
 
         try:
+            # 名前候補
             name_el = await card.query_selector(".rep_bukken-name")
+            if not name_el:
+                name_el = await card.query_selector("h2")
+            if not name_el:
+                name_el = await card.query_selector("h3")
+
+            # 件数候補
             count_el = await card.query_selector(".rep_bukken-count-room")
-            link_el = await card.query_selector("a")
 
             name = await name_el.inner_text() if name_el else "不明"
             count_text = await count_el.inner_text() if count_el else "0"
 
             try:
-                count = int(count_text)
+                count = int("".join([c for c in count_text if c.isdigit()]))
             except:
                 count = 0
 
+            link_el = await card.query_selector("a")
             link = ""
+
             if link_el:
                 href = await link_el.get_attribute("href")
                 if href:
@@ -130,7 +154,7 @@ async def fetch_city(page, city_name, city_code):
     return results
 
 # =========================
-# メイン
+# メイン処理
 # =========================
 
 async def main():
