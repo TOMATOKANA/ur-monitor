@@ -8,7 +8,7 @@ import os
 # 設定
 # =========================
 
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")DISCORD_USER_ID
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_WEBHOOK = os.environ.get("DISCORD_USER_ID")
 
 BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?"
