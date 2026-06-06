@@ -12,7 +12,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
+BASE_URL = "https://chintai.r6.ur-net.go.jp/"
 
 CITIES = {
     "世田谷区": "13112",
@@ -56,59 +56,63 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# データ正規化
+# 正規化
 # =========================
 
 def normalize(name, count, link, city):
-    if not name:
-        name = "不明"
-
     try:
-        count = int(str(count))
+        count = int(str(count).replace("件", "").strip())
     except:
         count = 0
 
     return {
-        "key": f"{city}:{name.strip()}",
-        "name": name.strip(),
+        "key": f"{city}:{name}",
+        "name": name,
         "count": count,
-        "link": link or ""
+        "link": link
     }
 
 # =========================
-# 取得 + HTMLデバッグ
+# フロー取得（重要）
 # =========================
 
 async def fetch_city(page, city_name, city_code):
 
-    url = BASE_URL + city_code
-
     print(f"\n--- {city_name} ---")
 
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        # ① トップページ
+        await page.goto(BASE_URL, wait_until="domcontentloaded")
+        await page.wait_for_timeout(3000)
+
+        # ② 地域チェック（checkbox想定）
+        selector = f"input[value='{city_code}']"
+
+        try:
+            await page.check(selector)
+        except:
+            # もしcheckboxじゃない場合の保険
+            await page.click(f"label:has-text('{city_name}')")
+
+        # ③ 検索ボタン
+        await page.click("text=検索")
+
+        # ④ 結果待機
         await page.wait_for_timeout(5000)
+
     except:
+        print(f"{city_name}: フロー失敗")
         return []
 
     # =========================
-    # HTMLデバッグ保存（重要）
-    # =========================
-    try:
-        html = await page.content()
-        with open(f"debug_{city_name}.html", "w", encoding="utf-8") as f:
-            f.write(html)
-    except:
-        pass
-
-    # =========================
-    # セレクタ探索
+    # DOM取得
     # =========================
 
     selectors = [
         ".module_cassettes_property",
         ".cassetteitem",
-        "article"
+        "article",
+        ".property"
     ]
 
     cards = []
@@ -130,9 +134,9 @@ async def fetch_city(page, city_name, city_code):
     for card in cards:
         try:
             name_el = await card.query_selector("h2")
-            count_el = await card.query_selector(".rep_bukken-count-room")
+            count_el = await card.query_selector(".room-count, .rep_bukken-count-room")
 
-            name = await name_el.inner_text() if name_el else None
+            name = await name_el.inner_text() if name_el else "不明"
             count = await count_el.inner_text() if count_el else "0"
 
             a = await card.query_selector("a")
