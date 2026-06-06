@@ -12,8 +12,10 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
+BASE = "https://chintai.r6.ur-net.go.jp/chintai/"
+
 # =========================
-# 地域コード
+# 対象地域
 # =========================
 
 CITIES = {
@@ -28,8 +30,6 @@ CITIES = {
     "狛江市": "13219",
     "目黒区": "13110"
 }
-
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
 
 # =========================
 # 通知
@@ -57,26 +57,33 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# 取得（完全ノー操作）
+# フルフロー取得
 # =========================
 
 async def fetch_city(page, city_name, city_code):
 
-    url = BASE_URL + city_code
-
     print(f"\n--- {city_name} ---")
-    print(url)
 
+    # ① トップページへ（重要）
+    await page.goto(BASE, wait_until="domcontentloaded")
+    await page.wait_for_timeout(2000)
+
+    # ② 地域選択画面へ遷移
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        await page.goto(
+            f"https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/?city%5B%5D={city_code}",
+            wait_until="domcontentloaded"
+        )
     except:
-        print(f"{city_name}: ページ取得失敗")
+        print("検索ページ遷移失敗")
         return {}
 
-    # JS描画待機（ここだけ重要）
-    await page.wait_for_timeout(5000)
+    await page.wait_for_timeout(3000)
 
-    # 複数セレクタ保険
+    # ③ 念のためJS安定待機
+    await page.wait_for_load_state("networkidle")
+
+    # ④ 検索結果待機（ここが重要）
     selectors = [
         ".module_cassettes_property",
         ".cassetteitem",
@@ -86,31 +93,32 @@ async def fetch_city(page, city_name, city_code):
     cards = []
 
     for sel in selectors:
-        cards = await page.query_selector_all(sel)
-        if cards:
-            break
+        try:
+            await page.wait_for_selector(sel, timeout=20000)
+            cards = await page.query_selector_all(sel)
+            if cards:
+                break
+        except:
+            continue
 
     if not cards:
-        print(f"{city_name}: DOM未生成")
+        print("DOM未生成（フロー未発火）")
         html = await page.content()
-
         with open(f"debug_{city_code}.html", "w", encoding="utf-8") as f:
             f.write(html)
-
         return {}
 
-    print(f"{city_name} 件数:", len(cards))
+    print("取得件数:", len(cards))
 
     results = {}
 
+    # ⑤ データ抽出
     for card in cards:
 
         try:
             name_el = await card.query_selector(".rep_bukken-name")
             if not name_el:
                 name_el = await card.query_selector("h2")
-            if not name_el:
-                name_el = await card.query_selector("h3")
 
             count_el = await card.query_selector(".rep_bukken-count-room")
 
