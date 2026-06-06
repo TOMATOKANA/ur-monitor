@@ -5,23 +5,14 @@ import requests
 from playwright.async_api import async_playwright
 
 # =========================
-# 設定（環境変数）
+# 設定
 # =========================
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
-
 MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-# =========================
-# UR検索URL
-# =========================
-
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?"
-
-# =========================
-# 監視対象エリア（10地域）
-# =========================
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/"
 
 CITIES = {
     "世田谷区": "13112",
@@ -37,27 +28,18 @@ CITIES = {
 }
 
 # =========================
-# URL生成
-# =========================
-
-def build_url():
-    return BASE_URL + "&".join(
-        [f"city%5B%5D={code}" for code in CITIES.values()]
-    )
-
-# =========================
 # Discord通知
 # =========================
 
-def notify(message: str):
+def notify(msg):
     if not DISCORD_WEBHOOK:
         print("Webhook未設定")
         return
+    requests.post(DISCORD_WEBHOOK, json={"content": msg})
 
-    requests.post(DISCORD_WEBHOOK, json={"content": message})
 
 # =========================
-# キャッシュ（差分検知）
+# キャッシュ
 # =========================
 
 def load_cache():
@@ -71,16 +53,16 @@ def save_cache(data):
     with open("cache.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 # =========================
-# Playwright取得処理
+# Playwright（クリック操作版）
 # =========================
 
 async def fetch_properties():
 
-    results = []
+    results = {}
 
     async with async_playwright() as p:
-
         browser = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox"]
@@ -88,33 +70,59 @@ async def fetch_properties():
 
         page = await browser.new_page()
 
-        url = build_url()
+        print("ページを開く...")
+        await page.goto(BASE_URL, wait_until="domcontentloaded")
 
-        print("ページ取得中...")
-        print("URL:", url)
+        # =========================
+        # 地域選択（チェック方式）
+        # =========================
+        print("地域選択中...")
 
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        for name, code in CITIES.items():
+            try:
+                # URはinput value=地域コードのケースが多い
+                selector = f"input[value='{code}']"
+                await page.check(selector)
+            except:
+                continue
 
-        # JS描画待ち
-        await page.wait_for_timeout(5000)
+        # =========================
+        # 検索ボタン押下
+        # =========================
+        print("検索実行...")
 
-        # DOM待機
         try:
-            await page.wait_for_selector(".module_cassettes_property", timeout=15000)
+            await page.click("button[type='submit']")
         except:
-            print("⚠ 物件が取得できませんでした（DOMなし）")
+            # フォールバック
+            try:
+                await page.click("text=検索")
+            except:
+                pass
 
+        # =========================
+        # 結果待機
+        # =========================
+        print("結果待機中...")
+
+        try:
+            await page.wait_for_selector(".module_cassettes_property", timeout=20000)
+        except:
+            print("⚠ 検索結果DOMが見つかりません")
             html = await page.content()
+
             with open("debug.html", "w", encoding="utf-8") as f:
                 f.write(html)
 
-            print("debug.html を保存しました")
             await browser.close()
-            return []
+            return {}
+
+        # =========================
+        # 取得
+        # =========================
 
         cards = await page.query_selector_all(".module_cassettes_property")
 
-        print("取得完了")
         print("物件数:", len(cards))
 
         for card in cards:
@@ -139,11 +147,10 @@ async def fetch_properties():
                     if href:
                         link = "https://chintai.r6.ur-net.go.jp" + href
 
-                results.append({
-                    "name": name.strip(),
+                results[name.strip()] = {
                     "count": count,
                     "link": link
-                })
+                }
 
             except:
                 continue
@@ -152,49 +159,39 @@ async def fetch_properties():
 
     return results
 
+
 # =========================
 # メイン処理
 # =========================
 
 async def main():
 
-    old_cache = load_cache()
-    new_cache = {}
-
-    data = await fetch_properties()
+    old = load_cache()
+    new = await fetch_properties()
 
     print("\n取得結果")
     print("=" * 50)
 
-    for item in data:
+    for name, data in new.items():
 
-        name = item["name"]
-        count = item["count"]
-        link = item["link"]
+        count = data["count"]
+        link = data["link"]
 
-        print(f"{name} / {count}")
+        print(name, count)
 
-        new_cache[name] = count
+        old_count = old.get(name, {}).get("count", 0)
 
-        old_count = old_cache.get(name, 0)
-
-        # 空室増加のみ通知
         if count > old_count:
 
-            msg = (
-                f"{MENTION_ID} 🆕空室増加検知\n"
-                f"物件: {name}\n"
-                f"前: {old_count} → 現在: {count}\n"
+            notify(
+                f"{MENTION_ID} 🆕空室増加\n"
+                f"{name}\n"
+                f"{old_count} → {count}\n"
                 f"{link}"
             )
 
-            notify(msg)
+    save_cache(new)
 
-    save_cache(new_cache)
-
-# =========================
-# 実行
-# =========================
 
 if __name__ == "__main__":
     asyncio.run(main())
