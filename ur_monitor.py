@@ -56,7 +56,7 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# データ正規化（重要）
+# データ正規化
 # =========================
 
 def normalize(name, count, link, city):
@@ -76,7 +76,7 @@ def normalize(name, count, link, city):
     }
 
 # =========================
-# 安定取得（失敗前提）
+# 取得 + HTMLデバッグ
 # =========================
 
 async def fetch_city(page, city_name, city_code):
@@ -87,9 +87,23 @@ async def fetch_city(page, city_name, city_code):
 
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        await page.wait_for_timeout(4000)
+        await page.wait_for_timeout(5000)
     except:
         return []
+
+    # =========================
+    # HTMLデバッグ保存（重要）
+    # =========================
+    try:
+        html = await page.content()
+        with open(f"debug_{city_name}.html", "w", encoding="utf-8") as f:
+            f.write(html)
+    except:
+        pass
+
+    # =========================
+    # セレクタ探索
+    # =========================
 
     selectors = [
         ".module_cassettes_property",
@@ -108,6 +122,7 @@ async def fetch_city(page, city_name, city_code):
             continue
 
     if not cards:
+        print(f"{city_name}: DOMなし")
         return []
 
     results = []
@@ -136,7 +151,7 @@ async def fetch_city(page, city_name, city_code):
     return results
 
 # =========================
-# メイン（安定化）
+# メイン
 # =========================
 
 async def main():
@@ -157,7 +172,6 @@ async def main():
 
             items = await fetch_city(page, city_name, city_code)
 
-            # 取得失敗でも止めない
             if not items:
                 continue
 
@@ -168,7 +182,6 @@ async def main():
 
                 old_count = old.get(key, {}).get("count", 0)
 
-                # 🟢 増加のみ通知
                 if item["count"] > old_count:
 
                     notify(
