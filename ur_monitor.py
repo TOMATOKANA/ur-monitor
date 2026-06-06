@@ -4,14 +4,39 @@ from playwright.async_api import async_playwright
 import requests
 import os
 
-
 # =========================
 # 設定
 # =========================
-START_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/"
 
-DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
-MENTION_ID = "329597244204515328"       # "<@ユーザーID>"
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")DISCORD_USER_ID
+DISCORD_WEBHOOK = os.environ.get("DISCORD_USER_ID")
+
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?"
+
+# =========================
+# 監視対象（指定10地域）
+# =========================
+CITIES = {
+    "世田谷区": "13112",
+    "中野区": "13114",
+    "杉並区": "13115",
+    "練馬区": "13120",
+    "豊島区": "13116",
+    "三鷹市": "13204",
+    "武蔵野市": "13203",
+    "調布市": "13208",
+    "狛江市": "13219",
+    "目黒区": "13110"
+}
+
+
+# =========================
+# URL生成
+# =========================
+def build_url():
+    return BASE_URL + "&".join(
+        [f"city%5B%5D={code}" for code in CITIES.values()]
+    )
 
 
 # =========================
@@ -26,7 +51,7 @@ def notify(message: str):
 
 
 # =========================
-# キャッシュ（差分管理）
+# キャッシュ管理
 # =========================
 def load_cache():
     try:
@@ -42,9 +67,10 @@ def save_cache(data):
 
 
 # =========================
-# Playwright取得本体
+# Playwright取得
 # =========================
 async def fetch_properties():
+
     results = []
 
     async with async_playwright() as p:
@@ -55,11 +81,9 @@ async def fetch_properties():
 
         page = await browser.new_page()
 
-        print("ページ取得中...")
-        await page.goto(START_URL, wait_until="networkidle", timeout=60000)
+        url = build_url()
 
-        # 検索結果ページに遷移（東京：13110）
-        url = page.url + "result/?city%5B%5D=13110"
+        print("ページ取得中...")
         await page.goto(url, wait_until="networkidle", timeout=60000)
 
         print("取得完了")
@@ -108,13 +132,13 @@ async def fetch_properties():
 # =========================
 async def main():
 
-    old = load_cache()
-    new = {}
+    old_cache = load_cache()
+    new_cache = {}
 
     data = await fetch_properties()
 
     print("\n取得結果")
-    print("=" * 40)
+    print("=" * 50)
 
     for item in data:
 
@@ -124,9 +148,9 @@ async def main():
 
         print(f"{name} / {count}")
 
-        new[name] = count
+        new_cache[name] = count
 
-        old_count = old.get(name, 0)
+        old_count = old_cache.get(name, 0)
 
         # 空室増加のみ通知
         if count > old_count:
@@ -140,7 +164,7 @@ async def main():
 
             notify(msg)
 
-    save_cache(new)
+    save_cache(new_cache)
 
 
 if __name__ == "__main__":
