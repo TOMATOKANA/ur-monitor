@@ -1,8 +1,8 @@
 name: UR Monitor
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"   # 5分ごと
+#  schedule:
+  #  - cron: "*/5 * * * *"   # 5分ごと
   workflow_dispatch:
 
 jobs:
