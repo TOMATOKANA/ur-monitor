@@ -1,21 +1,28 @@
+import os
 import json
 import asyncio
-from playwright.async_api import async_playwright
 import requests
-import os
+from playwright.async_api import async_playwright
 
 # =========================
-# 設定
+# 設定（環境変数）
 # =========================
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
-DISCORD_WEBHOOK = os.environ.get("DISCORD_USER_ID")
+DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
+
+MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
+
+# =========================
+# UR検索URL
+# =========================
 
 BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?"
 
 # =========================
-# 監視対象（指定10地域）
+# 監視対象エリア（10地域）
 # =========================
+
 CITIES = {
     "世田谷区": "13112",
     "中野区": "13114",
@@ -29,19 +36,19 @@ CITIES = {
     "目黒区": "13110"
 }
 
-
 # =========================
 # URL生成
 # =========================
+
 def build_url():
     return BASE_URL + "&".join(
         [f"city%5B%5D={code}" for code in CITIES.values()]
     )
 
-
 # =========================
 # Discord通知
 # =========================
+
 def notify(message: str):
     if not DISCORD_WEBHOOK:
         print("Webhook未設定")
@@ -49,10 +56,10 @@ def notify(message: str):
 
     requests.post(DISCORD_WEBHOOK, json={"content": message})
 
+# =========================
+# キャッシュ（差分検知）
+# =========================
 
-# =========================
-# キャッシュ管理
-# =========================
 def load_cache():
     try:
         with open("cache.json", "r", encoding="utf-8") as f:
@@ -60,20 +67,20 @@ def load_cache():
     except:
         return {}
 
-
 def save_cache(data):
     with open("cache.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+# =========================
+# Playwright取得処理
+# =========================
 
-# =========================
-# Playwright取得
-# =========================
 async def fetch_properties():
 
     results = []
 
     async with async_playwright() as p:
+
         browser = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox"]
@@ -84,12 +91,30 @@ async def fetch_properties():
         url = build_url()
 
         print("ページ取得中...")
-        await page.goto(url, wait_until="networkidle", timeout=60000)
+        print("URL:", url)
 
-        print("取得完了")
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+
+        # JS描画待ち
+        await page.wait_for_timeout(5000)
+
+        # DOM待機
+        try:
+            await page.wait_for_selector(".module_cassettes_property", timeout=15000)
+        except:
+            print("⚠ 物件が取得できませんでした（DOMなし）")
+
+            html = await page.content()
+            with open("debug.html", "w", encoding="utf-8") as f:
+                f.write(html)
+
+            print("debug.html を保存しました")
+            await browser.close()
+            return []
 
         cards = await page.query_selector_all(".module_cassettes_property")
 
+        print("取得完了")
         print("物件数:", len(cards))
 
         for card in cards:
@@ -102,6 +127,7 @@ async def fetch_properties():
                 name = await name_el.inner_text() if name_el else "不明"
 
                 count_text = await count_el.inner_text() if count_el else "0"
+
                 try:
                     count = int(count_text)
                 except:
@@ -126,10 +152,10 @@ async def fetch_properties():
 
     return results
 
-
 # =========================
 # メイン処理
 # =========================
+
 async def main():
 
     old_cache = load_cache()
@@ -166,6 +192,9 @@ async def main():
 
     save_cache(new_cache)
 
+# =========================
+# 実行
+# =========================
 
 if __name__ == "__main__":
     asyncio.run(main())
