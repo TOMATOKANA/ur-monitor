@@ -12,7 +12,11 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/"
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/"
+
+# =========================
+# 対象地域（10エリア）
+# =========================
 
 CITIES = {
     "世田谷区": "13112",
@@ -28,6 +32,15 @@ CITIES = {
 }
 
 # =========================
+# URL生成
+# =========================
+
+def build_url():
+    return BASE_URL + "?" + "&".join(
+        [f"city%5B%5D={code}" for code in CITIES.values()]
+    )
+
+# =========================
 # Discord通知
 # =========================
 
@@ -36,7 +49,6 @@ def notify(msg):
         print("Webhook未設定")
         return
     requests.post(DISCORD_WEBHOOK, json={"content": msg})
-
 
 # =========================
 # キャッシュ
@@ -53,9 +65,8 @@ def save_cache(data):
     with open("cache.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-
 # =========================
-# Playwright（クリック操作版）
+# 取得処理（安定版）
 # =========================
 
 async def fetch_properties():
@@ -63,6 +74,7 @@ async def fetch_properties():
     results = {}
 
     async with async_playwright() as p:
+
         browser = await p.chromium.launch(
             headless=True,
             args=["--no-sandbox"]
@@ -70,59 +82,32 @@ async def fetch_properties():
 
         page = await browser.new_page()
 
-        print("ページを開く...")
-        await page.goto(BASE_URL, wait_until="domcontentloaded")
+        url = build_url()
 
-        # =========================
-        # 地域選択（チェック方式）
-        # =========================
-        print("地域選択中...")
+        print("ページ取得中...")
+        print("URL:", url)
 
-        for name, code in CITIES.items():
-            try:
-                # URはinput value=地域コードのケースが多い
-                selector = f"input[value='{code}']"
-                await page.check(selector)
-            except:
-                continue
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
-        # =========================
-        # 検索ボタン押下
-        # =========================
-        print("検索実行...")
+        # ★重要：JS描画待ち（UR対策）
+        await page.wait_for_load_state("networkidle")
 
-        try:
-            await page.click("button[type='submit']")
-        except:
-            # フォールバック
-            try:
-                await page.click("text=検索")
-            except:
-                pass
-
-        # =========================
-        # 結果待機
-        # =========================
-        print("結果待機中...")
-
+        # ★重要：DOM出現待ち（2段階）
         try:
             await page.wait_for_selector(".module_cassettes_property", timeout=20000)
         except:
-            print("⚠ 検索結果DOMが見つかりません")
-            html = await page.content()
+            print("⚠ DOM取得失敗（HTML保存）")
 
+            html = await page.content()
             with open("debug.html", "w", encoding="utf-8") as f:
                 f.write(html)
 
             await browser.close()
             return {}
 
-        # =========================
-        # 取得
-        # =========================
-
         cards = await page.query_selector_all(".module_cassettes_property")
 
+        print("取得完了")
         print("物件数:", len(cards))
 
         for card in cards:
@@ -159,7 +144,6 @@ async def fetch_properties():
 
     return results
 
-
 # =========================
 # メイン処理
 # =========================
@@ -192,6 +176,9 @@ async def main():
 
     save_cache(new)
 
+# =========================
+# 実行
+# =========================
 
 if __name__ == "__main__":
     asyncio.run(main())
