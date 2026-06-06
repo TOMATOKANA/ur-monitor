@@ -12,10 +12,10 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/"
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
 
 # =========================
-# 対象地域（10エリア）
+# 地域コード（個別ループ方式）
 # =========================
 
 CITIES = {
@@ -30,15 +30,6 @@ CITIES = {
     "狛江市": "13219",
     "目黒区": "13110"
 }
-
-# =========================
-# URL生成
-# =========================
-
-def build_url():
-    return BASE_URL + "?" + "&".join(
-        [f"city%5B%5D={code}" for code in CITIES.values()]
-    )
 
 # =========================
 # Discord通知
@@ -66,81 +57,59 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# 取得処理（安定版）
+# 1地域取得
 # =========================
 
-async def fetch_properties():
+async def fetch_city(page, city_name, city_code):
+
+    url = BASE_URL + city_code
+
+    print(f"\n--- {city_name} ---")
+    print(url)
+
+    await page.goto(url, wait_until="domcontentloaded")
+    await page.wait_for_timeout(3000)
+
+    try:
+        await page.wait_for_selector(".module_cassettes_property", timeout=15000)
+    except:
+        print(f"{city_name}: DOMなし")
+        return {}
+
+    cards = await page.query_selector_all(".module_cassettes_property")
+
+    print(f"{city_name} 物件数:", len(cards))
 
     results = {}
 
-    async with async_playwright() as p:
+    for card in cards:
 
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox"]
-        )
-
-        page = await browser.new_page()
-
-        url = build_url()
-
-        print("ページ取得中...")
-        print("URL:", url)
-
-        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-
-        # ★重要：JS描画待ち（UR対策）
-        await page.wait_for_load_state("networkidle")
-
-        # ★重要：DOM出現待ち（2段階）
         try:
-            await page.wait_for_selector(".module_cassettes_property", timeout=20000)
-        except:
-            print("⚠ DOM取得失敗（HTML保存）")
+            name_el = await card.query_selector(".rep_bukken-name")
+            count_el = await card.query_selector(".rep_bukken-count-room")
+            link_el = await card.query_selector("a.rep_bukken-link")
 
-            html = await page.content()
-            with open("debug.html", "w", encoding="utf-8") as f:
-                f.write(html)
-
-            await browser.close()
-            return {}
-
-        cards = await page.query_selector_all(".module_cassettes_property")
-
-        print("取得完了")
-        print("物件数:", len(cards))
-
-        for card in cards:
+            name = await name_el.inner_text() if name_el else "不明"
+            count_text = await count_el.inner_text() if count_el else "0"
 
             try:
-                name_el = await card.query_selector(".rep_bukken-name")
-                count_el = await card.query_selector(".rep_bukken-count-room")
-                link_el = await card.query_selector("a.rep_bukken-link")
-
-                name = await name_el.inner_text() if name_el else "不明"
-
-                count_text = await count_el.inner_text() if count_el else "0"
-
-                try:
-                    count = int(count_text)
-                except:
-                    count = 0
-
-                link = ""
-                if link_el:
-                    href = await link_el.get_attribute("href")
-                    if href:
-                        link = "https://chintai.r6.ur-net.go.jp" + href
-
-                results[name.strip()] = {
-                    "count": count,
-                    "link": link
-                }
-
+                count = int(count_text)
             except:
-                continue
+                count = 0
 
-        await browser.close()
+            link = ""
+            if link_el:
+                href = await link_el.get_attribute("href")
+                if href:
+                    link = "https://chintai.r6.ur-net.go.jp" + href
+
+            results[f"{city_name}:{name.strip()}"] = {
+                "count": count,
+                "link": link
+            }
+
+        except:
+            continue
 
     return results
 
@@ -151,28 +120,38 @@ async def fetch_properties():
 async def main():
 
     old = load_cache()
-    new = await fetch_properties()
+    new = {}
 
-    print("\n取得結果")
-    print("=" * 50)
+    async with async_playwright() as p:
 
-    for name, data in new.items():
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox"]
+        )
 
-        count = data["count"]
-        link = data["link"]
+        page = await browser.new_page()
 
-        print(name, count)
+        # 全地域ループ
+        for city_name, city_code in CITIES.items():
 
-        old_count = old.get(name, {}).get("count", 0)
+            data = await fetch_city(page, city_name, city_code)
 
-        if count > old_count:
+            for k, v in data.items():
 
-            notify(
-                f"{MENTION_ID} 🆕空室増加\n"
-                f"{name}\n"
-                f"{old_count} → {count}\n"
-                f"{link}"
-            )
+                new[k] = v
+
+                old_count = old.get(k, {}).get("count", 0)
+
+                if v["count"] > old_count:
+
+                    notify(
+                        f"{MENTION_ID} 🆕空室増加\n"
+                        f"{k}\n"
+                        f"{old_count} → {v['count']}\n"
+                        f"{v['link']}"
+                    )
+
+        await browser.close()
 
     save_cache(new)
 
