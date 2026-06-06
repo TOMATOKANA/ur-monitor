@@ -1,7 +1,8 @@
 import os
 import json
-import time
+import asyncio
 import requests
+from playwright.async_api import async_playwright
 
 # =========================
 # 設定
@@ -11,9 +12,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-# =========================
-# UR地域コード
-# =========================
+TARGET_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/"
 
 CITIES = {
     "世田谷区": "13112",
@@ -27,12 +26,6 @@ CITIES = {
     "狛江市": "13219",
     "目黒区": "13110"
 }
-
-# =========================
-# ★ここが重要（APIエンドポイント）
-# =========================
-# ⚠ 初回は必ずブラウザDevToolsで確認して差し替え前提
-API_URL = "https://chintai.r6.ur-net.go.jp/api/search/result"
 
 # =========================
 # Discord通知
@@ -60,56 +53,79 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# API取得（直叩き）
+# ブラウザ完全再現取得
 # =========================
 
-def fetch_city(city_name, city_code):
-
-    params = {
-        "city[]": city_code
-    }
+async def fetch_city(page, city_name, city_code):
 
     print(f"\n--- {city_name} ---")
 
+    # ① ページ移動（通常ブラウザ相当）
+    await page.goto(TARGET_URL, wait_until="domcontentloaded")
+
+    # ② JS完全描画待ち（重要）
+    await page.wait_for_load_state("networkidle")
+
+    # ③ 地域チェック（UI依存）
     try:
-        r = requests.get(API_URL, params=params, timeout=20)
-        r.raise_for_status()
-    except Exception as e:
-        print("HTTP ERROR:", e)
+        selector = f"input[value='{city_code}']"
+        await page.check(selector)
+    except:
+        pass
+
+    # ④ 検索ボタン（複数パターン対応）
+    try:
+        await page.click("text=検索")
+    except:
+        try:
+            await page.click("button:has-text('検索')")
+        except:
+            pass
+
+    # ⑤ JS結果待ち（最重要）
+    try:
+        await page.wait_for_selector(".module_cassettes_property", timeout=20000)
+    except:
+        print(f"{city_name}: DOM未生成")
         return {}
 
-    data = r.json()
+    # ⑥ 物件取得
+    cards = await page.query_selector_all(".module_cassettes_property")
+
+    print(f"{city_name} 件数:", len(cards))
 
     results = {}
 
-    # =========================
-    # 構造吸収（UR変動対策）
-    # =========================
+    for card in cards:
 
-    items = (
-        data.get("data")
-        or data.get("properties")
-        or data.get("result")
-        or []
-    )
+        try:
+            name_el = await card.query_selector(".rep_bukken-name")
+            count_el = await card.query_selector(".rep_bukken-count-room")
+            link_el = await card.query_selector("a")
 
-    for item in items:
+            name = await name_el.inner_text() if name_el else "不明"
+            count_text = await count_el.inner_text() if count_el else "0"
 
-        name = item.get("name") or item.get("bukkenName") or "不明"
-        count = item.get("vacancyCount") or item.get("count") or 0
-        link = item.get("detailUrl") or ""
+            try:
+                count = int(count_text)
+            except:
+                count = 0
 
-        if link and not link.startswith("http"):
-            link = "https://chintai.r6.ur-net.go.jp" + link
+            link = ""
+            if link_el:
+                href = await link_el.get_attribute("href")
+                if href:
+                    link = "https://chintai.r6.ur-net.go.jp" + href
 
-        key = f"{city_name}:{name}"
+            key = f"{city_name}:{name.strip()}"
 
-        results[key] = {
-            "count": int(count),
-            "link": link
-        }
+            results[key] = {
+                "count": count,
+                "link": link
+            }
 
-    print("取得件数:", len(results))
+        except:
+            continue
 
     return results
 
@@ -117,31 +133,48 @@ def fetch_city(city_name, city_code):
 # メイン
 # =========================
 
-def main():
+async def main():
 
     old = load_cache()
     new = {}
 
-    for city_name, city_code in CITIES.items():
+    async with async_playwright() as p:
 
-        data = fetch_city(city_name, city_code)
+        browser = await p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled"
+            ]
+        )
 
-        for k, v in data.items():
+        context = await browser.new_context(
+            viewport={"width": 1280, "height": 720},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+        )
 
-            new[k] = v
+        page = await context.new_page()
 
-            old_count = old.get(k, {}).get("count", 0)
+        for city_name, city_code in CITIES.items():
 
-            if v["count"] > old_count:
+            data = await fetch_city(page, city_name, city_code)
 
-                notify(
-                    f"{MENTION_ID} 🆕空室増加\n"
-                    f"{k}\n"
-                    f"{old_count} → {v['count']}\n"
-                    f"{v['link']}"
-                )
+            for k, v in data.items():
 
-        time.sleep(1)  # アクセス制御
+                new[k] = v
+
+                old_count = old.get(k, {}).get("count", 0)
+
+                if v["count"] > old_count:
+
+                    notify(
+                        f"{MENTION_ID} 🆕空室増加\n"
+                        f"{k}\n"
+                        f"{old_count} → {v['count']}\n"
+                        f"{v['link']}"
+                    )
+
+        await browser.close()
 
     save_cache(new)
 
@@ -150,4 +183,4 @@ def main():
 # =========================
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
