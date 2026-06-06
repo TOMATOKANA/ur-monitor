@@ -4,12 +4,16 @@ import requests
 
 STATE_FILE = "state.json"
 
-# ===== Discord設定 =====
-DISCORD_WEBHOOK_URL = os.getenv("https://discord.com/api/webhooks/1512593894292979763/rDqQiE18d0aBdLpZqOc9P3Z_prepaJz_SG1BU-_6S7oL-imeGooK5YvIinxJ5r1GGiYD")
-DISCORD_USER_ID = os.getenv("329597244204515328")  # メンション用
+# =========================
+# Discord設定（GitHub Secrets）
+# =========================
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
+DISCORD_USER_ID = os.getenv("DISCORD_USER_ID")
 
 
-# ===== 状態管理 =====
+# =========================
+# 状態管理
+# =========================
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {}
@@ -25,8 +29,10 @@ def save_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-# ===== Discord通知（メンション付き）=====
-def notify_discord(message):
+# =========================
+# Discord送信（メンション付き）
+# =========================
+def send_discord(message):
     if not DISCORD_WEBHOOK_URL:
         print("Webhook未設定")
         return
@@ -36,12 +42,36 @@ def notify_discord(message):
     }
 
     try:
-        requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        r = requests.post(DISCORD_WEBHOOK_URL, json=payload)
+        print("Discord status:", r.status_code, r.text)
     except Exception as e:
         print("Discord送信エラー:", e)
 
 
-# ===== 差分検知（取りこぼしゼロ版）=====
+# =========================
+# UR取得（ここはあなたのSeleniumに置き換え済み想定）
+# =========================
+def fetch_data():
+    """
+    ここにSelenium or requestsで取得した結果を返す
+
+    例：
+    {
+        "恵比寿ビュータワー": 2,
+        "中目黒ゲートタウンハイツ": 1
+    }
+    """
+
+    # ★テスト用（動作確認が終わったら削除OK）
+    return {
+        "テスト物件A": 1,
+        "テスト物件B": 2
+    }
+
+
+# =========================
+# 差分検知（取りこぼしゼロ版）
+# =========================
 def detect_changes(current_data):
     old_data = load_state()
     notifications = []
@@ -72,31 +102,24 @@ def detect_changes(current_data):
     return notifications
 
 
-# ===== Seleniumの代わり（ここはあなたの取得関数を接続）=====
-def fetch_data():
-    """
-    ここにSelenium処理を入れる
-    return例:
-    {
-        "恵比寿ビュータワー": 2,
-        "中目黒ゲートタウンハイツ": 0
-    }
-    """
-    return {}
-
-
-# ===== メイン =====
+# =========================
+# メイン処理
+# =========================
 def main():
     print("UR Monitor start")
 
-    current = fetch_data()
+    current_data = fetch_data()
 
-    changes = detect_changes(current)
+    print("取得データ:", current_data)
+
+    changes = detect_changes(current_data)
+
+    print("検知結果:", changes)
 
     if changes:
         for msg in changes:
-            print(msg)
-            notify_discord(msg)
+            print("送信:", msg)
+            send_discord(msg)
     else:
         print("変化なし")
 
