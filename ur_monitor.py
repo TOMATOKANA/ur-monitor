@@ -1,15 +1,16 @@
 import json
 import asyncio
 from playwright.async_api import async_playwright
-
 import requests
+import os
+
 
 # =========================
 # 設定
 # =========================
 START_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/"
 
-DISCORD_WEBHOOK = "https://discord.com/api/webhooks/1512593894292979763/rDqQiE18d0aBdLpZqOc9P3Z_prepaJz_SG1BU-_6S7oL-imeGooK5YvIinxJ5r1GGiYD"  # GitHub Secrets推奨
+DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 MENTION_ID = "329597244204515328"       # "<@ユーザーID>"
 
 
