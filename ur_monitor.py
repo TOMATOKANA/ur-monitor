@@ -10,12 +10,10 @@ from playwright.async_api import async_playwright
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
-MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
-
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
+MENTION = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
 # =========================
-# 監視対象（固定）
+# 地域コード
 # =========================
 
 CITIES = {
@@ -30,6 +28,8 @@ CITIES = {
     "狛江市": "13219",
     "目黒区": "13110"
 }
+
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
 
 # =========================
 # 通知
@@ -57,7 +57,7 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# 1地域取得（最終安定版）
+# 取得（完全ノー操作）
 # =========================
 
 async def fetch_city(page, city_name, city_code):
@@ -73,26 +73,24 @@ async def fetch_city(page, city_name, city_code):
         print(f"{city_name}: ページ取得失敗")
         return {}
 
-    # JS完全待機（重要）
-    await page.wait_for_timeout(4000)
+    # JS描画待機（ここだけ重要）
+    await page.wait_for_timeout(5000)
 
-    # DOM待機（複数保険）
+    # 複数セレクタ保険
     selectors = [
         ".module_cassettes_property",
         ".cassetteitem",
         "article"
     ]
 
-    found = False
-    for sel in selectors:
-        try:
-            await page.wait_for_selector(sel, timeout=15000)
-            found = True
-            break
-        except:
-            continue
+    cards = []
 
-    if not found:
+    for sel in selectors:
+        cards = await page.query_selector_all(sel)
+        if cards:
+            break
+
+    if not cards:
         print(f"{city_name}: DOM未生成")
         html = await page.content()
 
@@ -101,13 +99,6 @@ async def fetch_city(page, city_name, city_code):
 
         return {}
 
-    # 物件カード取得（複数パターン対応）
-    cards = []
-    for sel in selectors:
-        cards = await page.query_selector_all(sel)
-        if cards:
-            break
-
     print(f"{city_name} 件数:", len(cards))
 
     results = {}
@@ -115,14 +106,12 @@ async def fetch_city(page, city_name, city_code):
     for card in cards:
 
         try:
-            # 名前候補
             name_el = await card.query_selector(".rep_bukken-name")
             if not name_el:
                 name_el = await card.query_selector("h2")
             if not name_el:
                 name_el = await card.query_selector("h3")
 
-            # 件数候補
             count_el = await card.query_selector(".rep_bukken-count-room")
 
             name = await name_el.inner_text() if name_el else "不明"
@@ -133,11 +122,10 @@ async def fetch_city(page, city_name, city_code):
             except:
                 count = 0
 
-            link_el = await card.query_selector("a")
             link = ""
-
-            if link_el:
-                href = await link_el.get_attribute("href")
+            a = await card.query_selector("a")
+            if a:
+                href = await a.get_attribute("href")
                 if href:
                     link = "https://chintai.r6.ur-net.go.jp" + href
 
@@ -154,7 +142,7 @@ async def fetch_city(page, city_name, city_code):
     return results
 
 # =========================
-# メイン処理
+# メイン
 # =========================
 
 async def main():
@@ -166,18 +154,10 @@ async def main():
 
         browser = await p.chromium.launch(
             headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-blink-features=AutomationControlled"
-            ]
+            args=["--no-sandbox"]
         )
 
-        context = await browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-        )
-
-        page = await context.new_page()
+        page = await browser.new_page()
 
         for city_name, city_code in CITIES.items():
 
@@ -192,7 +172,7 @@ async def main():
                 if v["count"] > old_count:
 
                     notify(
-                        f"{MENTION_ID} 🆕空室増加\n"
+                        f"{MENTION} 🆕空室増加\n"
                         f"{k}\n"
                         f"{old_count} → {v['count']}\n"
                         f"{v['link']}"
