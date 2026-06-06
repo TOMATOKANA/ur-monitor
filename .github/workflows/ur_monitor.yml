@@ -2,19 +2,15 @@ name: UR Monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # 5分ごと
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:
-  run-bot:
+  monitor:
     runs-on: ubuntu-latest
 
-    env:
-      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-      DISCORD_USER_ID: ${{ secrets.DISCORD_USER_ID }}
-
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
