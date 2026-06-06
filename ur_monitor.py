@@ -12,10 +12,8 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 DISCORD_USER_ID = os.environ.get("DISCORD_USER_ID")
 MENTION_ID = f"<@{DISCORD_USER_ID}>" if DISCORD_USER_ID else ""
 
-BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/?city%5B%5D="
-
 # =========================
-# 地域コード（個別ループ方式）
+# UR対象地域
 # =========================
 
 CITIES = {
@@ -30,6 +28,8 @@ CITIES = {
     "狛江市": "13219",
     "目黒区": "13110"
 }
+
+BASE_URL = "https://chintai.r6.ur-net.go.jp/chintai/kanto/tokyo/search/result/"
 
 # =========================
 # Discord通知
@@ -57,64 +57,93 @@ def save_cache(data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 # =========================
-# 1地域取得
+# APIレスポンス取得（XHR監視）
 # =========================
 
-async def fetch_city(page, city_name, city_code):
+async def fetch_city_api(page, city_name, city_code):
 
-    url = BASE_URL + city_code
+    url = BASE_URL + f"?city%5B%5D={city_code}"
 
     print(f"\n--- {city_name} ---")
     print(url)
 
+    data_container = {}
+
+    # ネットワークレスポンス監視
+    def handle_response(response):
+        try:
+            if "application/json" in response.headers.get("content-type", ""):
+                data_container["json"] = asyncio.create_task(response.json())
+        except:
+            pass
+
+    page.on("response", handle_response)
+
     await page.goto(url, wait_until="domcontentloaded")
-    await page.wait_for_timeout(3000)
 
-    try:
+    await page.wait_for_timeout(5000)
+
+    # JSON取得待ち
+    json_data = None
+    if "json" in data_container:
+        try:
+            json_data = await data_container["json"]
+        except:
+            json_data = None
+
+    # fallback（DOM）
+    if not json_data:
+        print(f"{city_name}: APIなし → DOMフォールバック")
+
         await page.wait_for_selector(".module_cassettes_property", timeout=15000)
-    except:
-        print(f"{city_name}: DOMなし")
-        return {}
+        cards = await page.query_selector_all(".module_cassettes_property")
 
-    cards = await page.query_selector_all(".module_cassettes_property")
+        results = {}
 
-    print(f"{city_name} 物件数:", len(cards))
+        for card in cards:
+            try:
+                name_el = await card.query_selector(".rep_bukken-name")
+                count_el = await card.query_selector(".rep_bukken-count-room")
 
+                name = await name_el.inner_text() if name_el else "不明"
+                count_text = await count_el.inner_text() if count_el else "0"
+
+                try:
+                    count = int(count_text)
+                except:
+                    count = 0
+
+                results[f"{city_name}:{name.strip()}"] = {
+                    "count": count
+                }
+
+            except:
+                continue
+
+        return results
+
+    # JSON構造解析（サイト依存）
     results = {}
 
-    for card in cards:
+    try:
+        # ここはUR構造変化に対応できるよう安全処理
+        items = json_data.get("properties") or json_data.get("data") or []
 
-        try:
-            name_el = await card.query_selector(".rep_bukken-name")
-            count_el = await card.query_selector(".rep_bukken-count-room")
-            link_el = await card.query_selector("a.rep_bukken-link")
+        for item in items:
+            name = item.get("name", "不明")
+            count = item.get("vacancyCount", 0)
 
-            name = await name_el.inner_text() if name_el else "不明"
-            count_text = await count_el.inner_text() if count_el else "0"
-
-            try:
-                count = int(count_text)
-            except:
-                count = 0
-
-            link = ""
-            if link_el:
-                href = await link_el.get_attribute("href")
-                if href:
-                    link = "https://chintai.r6.ur-net.go.jp" + href
-
-            results[f"{city_name}:{name.strip()}"] = {
-                "count": count,
-                "link": link
+            results[f"{city_name}:{name}"] = {
+                "count": int(count)
             }
 
-        except:
-            continue
+    except:
+        print(f"{city_name}: JSON解析失敗")
 
     return results
 
 # =========================
-# メイン処理
+# メイン
 # =========================
 
 async def main():
@@ -131,10 +160,9 @@ async def main():
 
         page = await browser.new_page()
 
-        # 全地域ループ
         for city_name, city_code in CITIES.items():
 
-            data = await fetch_city(page, city_name, city_code)
+            data = await fetch_city_api(page, city_name, city_code)
 
             for k, v in data.items():
 
@@ -145,10 +173,9 @@ async def main():
                 if v["count"] > old_count:
 
                     notify(
-                        f"{MENTION_ID} 🆕空室増加\n"
+                        f"{MENTION_ID} 🆕空室増加検知\n"
                         f"{k}\n"
-                        f"{old_count} → {v['count']}\n"
-                        f"{v['link']}"
+                        f"{old_count} → {v['count']}"
                     )
 
         await browser.close()
